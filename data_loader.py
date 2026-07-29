@@ -13,6 +13,7 @@ load_dotenv()
 client = OpenAI()
 EMBED_MODEL = "text-embedding-3-large"  # or "text-embedding-3-small"
 EMBED_DIM = 3072
+EMBED_BATCH_SIZE = 100
 
 splitter = SentenceSplitter(chunk_size = 1000, chunk_overlap = 200)
 
@@ -121,17 +122,21 @@ def load_and_chunk_github_repo(owner: str, repo_name:str, file_paths: list[str],
     files = fetch_repo_files(owner, repo_name, file_paths, branch)
     all_chunks = []
     for path, data in files.items():
-        chunks = load_and_chunk_github_file(path, data["text"], repo_name, data["sha"])
+        chunks = load_and_chunk_github_file(path, data["content"], repo_name, data["sha"])
         all_chunks.extend(chunks)
     return all_chunks
-    
+
 # Embedding
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    response = client.embeddings.create(
-        model=EMBED_MODEL,
-        input=texts
-    )
-    return [item.embedding for item in response.data]
+    """Embed text in bounded batches while preserving input order."""
+    vectors = []
+    for start in range(0, len(texts), EMBED_BATCH_SIZE):
+        response = client.embeddings.create(
+            model=EMBED_MODEL,
+            input=texts[start : start + EMBED_BATCH_SIZE],
+        )
+        vectors.extend(item.embedding for item in response.data)
+    return vectors
 
 def embed_chunks(chunks: list[dict]) -> list[dict]:
     """Takes chunk dicts (with 'text'), returns them with 'embedding' attached."""
@@ -139,5 +144,3 @@ def embed_chunks(chunks: list[dict]) -> list[dict]:
     for chunk, vec in zip(chunks, vectors):
         chunk["embedding"] = vec
     return chunks
-    
-    
