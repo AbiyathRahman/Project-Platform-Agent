@@ -1,19 +1,13 @@
-from openai import OpenAI
 from pathlib import Path
 import base64
 import os
-
+from qdrant_store import get_existing_sha, delete_file_chunks
 from github import Github
 from llama_index.readers.file import PDFReader
 from llama_index.core.node_parser import SentenceSplitter, CodeSplitter
 from dotenv import load_dotenv
 
 load_dotenv()
-
-client = OpenAI()
-EMBED_MODEL = "text-embedding-3-large"  # or "text-embedding-3-small"
-EMBED_DIM = 3072
-EMBED_BATCH_SIZE = 100
 
 splitter = SentenceSplitter(chunk_size = 1000, chunk_overlap = 200)
 
@@ -23,6 +17,11 @@ EXT_TO_LANG = {
     ".tsx": "typescript",
     ".ts": "typescript",
     ".py": "python",
+}
+
+SUPPORTED_SOURCE_EXTENSIONS = {
+    ".css", ".go", ".html", ".java", ".js", ".json", ".jsx", ".md", ".mdx",
+    ".py", ".rb", ".rs", ".sql", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
 }
 
 def get_code_splitter(file_path: str) -> CodeSplitter:
@@ -49,6 +48,19 @@ def load_and_chunk_pdf(path: str | Path):
     return chunks
 
 # Github loading
+def list_repo_source_files(owner: str, repo_name: str, branch: str = "main") -> list[str]:
+    """List text-based source files that can safely be ingested from a repository."""
+    g = Github(os.getenv("GITHUB_TOKEN"))
+    repo = g.get_repo(f"{owner}/{repo_name}")
+    tree = repo.get_git_tree(sha=branch, recursive=True)
+    return sorted(
+        item.path
+        for item in tree.tree
+        if getattr(item, "type", None) == "blob"
+        and Path(item.path).suffix.lower() in SUPPORTED_SOURCE_EXTENSIONS
+    )
+
+
 def fetch_repo_files(
     owner: str,
     repo_name: str,
@@ -122,25 +134,13 @@ def load_and_chunk_github_repo(owner: str, repo_name:str, file_paths: list[str],
     files = fetch_repo_files(owner, repo_name, file_paths, branch)
     all_chunks = []
     for path, data in files.items():
+        existing_sha = get_existing_sha(repo_name, path)
+        if existing_sha == data["sha"]:
+            print(f"Skipping {path} (SHA unchanged)")
+            continue
+        if existing_sha is not None:
+            delete_file_chunks(repo_name, path)
         chunks = load_and_chunk_github_file(path, data["content"], repo_name, data["sha"])
         all_chunks.extend(chunks)
     return all_chunks
 
-# Embedding
-def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed text in bounded batches while preserving input order."""
-    vectors = []
-    for start in range(0, len(texts), EMBED_BATCH_SIZE):
-        response = client.embeddings.create(
-            model=EMBED_MODEL,
-            input=texts[start : start + EMBED_BATCH_SIZE],
-        )
-        vectors.extend(item.embedding for item in response.data)
-    return vectors
-
-def embed_chunks(chunks: list[dict]) -> list[dict]:
-    """Takes chunk dicts (with 'text'), returns them with 'embedding' attached."""
-    vectors = embed_texts([c["text"] for c in chunks])
-    for chunk, vec in zip(chunks, vectors):
-        chunk["embedding"] = vec
-    return chunks

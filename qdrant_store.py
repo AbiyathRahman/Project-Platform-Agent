@@ -1,14 +1,19 @@
 import os
-
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PointStruct
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 import uuid
 from openai import OpenAI
-from data_loader import embed_texts
+from embeddings import embed_texts
 from dotenv import load_dotenv
 
 load_dotenv()
-ai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 CHAT_MODEL = "gpt-4o-mini" 
 COLLECTION_NAME = "portfolio_agent"
 EMBED_DIM = 3072
@@ -63,8 +68,6 @@ def upsert_chunks(chunks: list[dict]):
 
 def search(query_vector: list[float], top_k: int = 5, repo_filter: str | None = None):
     """Return the most similar chunks, optionally scoped to one repository."""
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
-
     query_filter = None
     if repo_filter:
         query_filter = Filter(
@@ -107,7 +110,7 @@ def answer_question(query: str, top_k: int = 5, repo_filter: str | None = None) 
     user_message = f"Context:\n{context}\n\nQuestion: {query}"
 
     # 4. generate
-    response = ai_client.chat.completions.create(
+    response = OpenAI(api_key=os.getenv("OPENAI_API_KEY")).chat.completions.create(
         model=CHAT_MODEL,
         max_tokens=600,
         temperature=0.2,  # low — we want faithful, grounded answers, not creative ones
@@ -125,3 +128,22 @@ def answer_question(query: str, top_k: int = 5, repo_filter: str | None = None) 
         ],
         "usage": response.usage.model_dump() if response.usage else None,
     }
+    
+def get_existing_sha(repo: str, file_path: str) -> str | None:
+    ensure_collection()
+    results, _ = client.scroll(
+        collection_name = COLLECTION_NAME,
+        scroll_filter = Filter(must=[FieldCondition(key="repo", match=MatchValue(value=repo)),
+                                     FieldCondition(key="file_path", match=MatchValue(value=file_path))]),
+        limit = 1,
+    )
+    if results:
+        return results[0].payload.get("sha")
+    return None
+
+def delete_file_chunks(repo: str, file_path: str):
+    client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector = Filter(must=[FieldCondition(key="repo", match=MatchValue(value=repo)),
+                                        FieldCondition(key="file_path", match=MatchValue(value=file_path))])
+    )
