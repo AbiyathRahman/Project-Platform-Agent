@@ -9,14 +9,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-splitter = SentenceSplitter(chunk_size = 1000, chunk_overlap = 200)
+splitter = SentenceSplitter(chunk_size=1000, chunk_overlap=200)
 
 EXT_TO_LANG = {
-     ".jsx": "javascript",
-    ".js": "javascript",
-    ".tsx": "typescript",
-    ".ts": "typescript",
     ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".cpp": "cpp",
+    ".c": "c",
+    ".html": "html",
+    ".css": "css",
 }
 
 SUPPORTED_SOURCE_EXTENSIONS = {
@@ -24,15 +32,20 @@ SUPPORTED_SOURCE_EXTENSIONS = {
     ".py", ".rb", ".rs", ".sql", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
 }
 
-def get_code_splitter(file_path: str) -> CodeSplitter:
-    ext = Path(file_path).suffix
-    lang = EXT_TO_LANG.get(ext, "text")
-    if lang is None:
-        return None # type: ignore
-    return CodeSplitter(language=lang, chunk_lines=40, chunk_lines_overlap=5, max_chars=1500)
+
+def get_code_splitter(file_path: str):
+    ext = Path(file_path).suffix.lower()
+    lang = EXT_TO_LANG.get(ext)
+    if not lang:
+        return None
+    try:
+        return CodeSplitter(language=lang, chunk_lines=40, chunk_lines_overlap=5, max_chars=1500)
+    except Exception:
+        return None
+
 
 def load_and_chunk_pdf(path: str | Path):
-    docs =PDFReader().load_data(file=Path(path))
+    docs = PDFReader().load_data(file=Path(path))
     texts = [d.text for d in docs if getattr(d, "text", None)]
     chunks = []
     for t in texts:
@@ -42,12 +55,11 @@ def load_and_chunk_pdf(path: str | Path):
                 "metadata": {
                     "source_type": "pdf",
                     "source": str(path),
-                    
                 }
             })
     return chunks
 
-# Github loading
+
 def list_repo_source_files(owner: str, repo_name: str, branch: str = "main") -> list[str]:
     """List text-based source files that can safely be ingested from a repository."""
     g = Github(os.getenv("GITHUB_TOKEN"))
@@ -78,7 +90,7 @@ def fetch_repo_files(
     for item in tree.tree:
         if item.path in path_set:
             blob = repo.get_git_blob(item.sha)
-            content = base64.b64decode(blob.content).decode("utf-8")
+            content = base64.b64decode(blob.content).decode("utf-8", errors="replace")
             found[item.path] = {
                 "content": content,
                 "sha": item.sha,
@@ -106,30 +118,37 @@ def load_and_chunk_doc(text: str, file_path: str, repo: str, sha: str):
         for chunk in chunks
     ]
 
-def load_and_chunk_code(text:str, file_path:str, repo:str, sha:str):
-    splitter = get_code_splitter(file_path)
-    if splitter is None:
+
+def load_and_chunk_code(text: str, file_path: str, repo: str, sha: str):
+    code_splitter = get_code_splitter(file_path)
+    if code_splitter is None:
         return load_and_chunk_doc(text, file_path, repo, sha)
-    chunks = splitter.split_text(text)
-    return [
-        {
-            "text": chunk,
-            "metadata": {
-                "repo": repo,
-                "file_path": file_path,
-                "sha": sha,
-                "source_type": "code",
-            },
-        }
-        for chunk in chunks
-    ]
-    
+    try:
+        chunks = code_splitter.split_text(text)
+        return [
+            {
+                "text": chunk,
+                "metadata": {
+                    "repo": repo,
+                    "file_path": file_path,
+                    "sha": sha,
+                    "source_type": "code",
+                },
+            }
+            for chunk in chunks
+        ]
+    except Exception:
+        # Fall back gracefully to standard sentence splitter if language parser fails
+        return load_and_chunk_doc(text, file_path, repo, sha)
+
+
 def load_and_chunk_github_file(file_path: str, text: str, repo: str, sha: str):
-    if file_path.endswith((".md", ".mdx", ".txt")):
+    if file_path.lower().endswith((".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".toml", ".xml")):
         return load_and_chunk_doc(text, file_path, repo, sha)
     return load_and_chunk_code(text, file_path, repo, sha)
 
-def load_and_chunk_github_repo(owner: str, repo_name:str, file_paths: list[str], branch: str = "main"):
+
+def load_and_chunk_github_repo(owner: str, repo_name: str, file_paths: list[str], branch: str = "main"):
     """Load and chunk selected files from a GitHub repo."""
     files = fetch_repo_files(owner, repo_name, file_paths, branch)
     all_chunks = []
@@ -143,4 +162,3 @@ def load_and_chunk_github_repo(owner: str, repo_name:str, file_paths: list[str],
         chunks = load_and_chunk_github_file(path, data["content"], repo_name, data["sha"])
         all_chunks.extend(chunks)
     return all_chunks
-
